@@ -1,0 +1,8 @@
+# Look of the web app: canal water, reeds and Amsterdam brick
+[theme]
+base = "light"
+primaryColor = "#2f7d5b"
+backgroundColor = "#f5f3ea"
+secondaryBackgroundColor = "#e6eee2"
+textColor = "#1f2e27"
+font = "sans serif"

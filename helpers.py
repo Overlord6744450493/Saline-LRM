@@ -6,6 +6,7 @@ The model inputs themselves are made in features.py.
 import glob
 import os
 
+import numpy as np
 import pandas as pd
 
 try:  # use the Windows certificate store, otherwise the Rijkswaterstaat download fails
@@ -214,11 +215,13 @@ def today_gmt1():
     return pd.Timestamp.now(tz="Etc/GMT-1").tz_localize(None).normalize()
 
 
-def load_live_data(today):
-    """Live sea level (Rijkswaterstaat) and weather forecast (Open-Meteo) around today."""
-    sea = tidy_sea_level(fetch_sea_level(today - pd.Timedelta(days=2), today + pd.Timedelta(days=3),
-                                         timeout=60))
-    weather = forecast_weather(past_days=2, forecast_days=4)
+def load_live_data(today, days_ahead=2):
+    """Live sea level (Rijkswaterstaat) and weather forecast (Open-Meteo) around today,
+    far enough ahead to predict day today+days_ahead, and 8 days back for the
+    'last 7 days' inputs (features.context_features)."""
+    sea = tidy_sea_level(fetch_sea_level(today - pd.Timedelta(days=8),
+                                         today + pd.Timedelta(days=days_ahead + 1), timeout=60))
+    weather = forecast_weather(past_days=8, forecast_days=days_ahead + 2)
     return sea, weather
 
 
@@ -230,10 +233,52 @@ def daily_inputs(sea_daily, weather, storage_level):
     return add_salt_level(days)
 
 
-def build_live_features(today, sea, weather, storage_level):
+def build_live_features(today, sea, weather, storage_level, horizon=2, context=False):
     """Make the model inputs for 'today' (day t) from live data, with features.build_features."""
     days = daily_inputs(live_daily_sea_level(sea), weather, storage_level)
-    return build_features(days).loc[[today]].reset_index(drop=True)
+    return build_features(days, horizon, context).loc[[today]].reset_index(drop=True)
+
+
+def shap_values(entry, X):
+    """SHAP for many rows at once: one row per day, one column per input.
+    entry = one horizon from output/models_horizons.joblib. Returns (values, typical-day value, unit).
+    Logistic regression is explained in log-odds (exact), a random forest in probability."""
+    import shap  # only the web app and step 9 need it:  python -m pip install shap
+
+    model, background = entry["model"], entry["background"][entry["features"]]
+    X = X[entry["features"]]
+    if hasattr(model, "steps"):  # scaler + logistic regression
+        scaler, linear = model[:-1], model[-1]
+        masker = shap.maskers.Independent(scaler.transform(background), max_samples=len(background))
+        explainer = shap.LinearExplainer(linear, masker)
+        values = explainer(scaler.transform(X))
+        unit = "log-odds"
+    else:
+        explainer = shap.TreeExplainer(model, background, model_output="probability")
+        values = explainer(X)[..., 1]
+        unit = "probability"
+    table, base = pd.DataFrame(values.values, index=X.index, columns=X.columns), float(values.base_values[0])
+    if unit == "log-odds" and "calibration" in entry:  # calibrated log-odds = a * log-odds + b
+        a, b = entry["calibration"]
+        table, base = table * a, a * base + b
+    return table, base, unit
+
+
+def predict_inflow(entry, X):
+    """Probability of inflow for each row of X, CALIBRATED: a forecast of 30% means that on
+    such days inflow happened about 30% of the time in the validation years (step 9)."""
+    raw = entry["model"].predict_proba(X[entry["features"]])[:, 1].clip(1e-6, 1 - 1e-6)
+    if "calibration" not in entry:
+        return raw
+    a, b = entry["calibration"]
+    return 1 / (1 + np.exp(-(a * np.log(raw / (1 - raw)) + b)))
+
+
+def explain_prediction(entry, X):
+    """SHAP: how much each input pushed THIS prediction up or down, compared with a typical
+    training day. X = one row of inputs. Returns (contributions per input, typical-day value, unit)."""
+    values, base, unit = shap_values(entry, X)
+    return values.iloc[0], base, unit
 
 
 def risk_label(prob, threshold):
