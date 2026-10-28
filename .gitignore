@@ -1,0 +1,29 @@
+# ---------- data (12+ GB, download with download_data.py / the step scripts) ----------
+/data/
+/agv/
+/Flags/
+*.7z
+*.tar
+*.gz
+*.zip
+
+# generated data tables in output/ (rebuild with the step scripts)
+/output/*.csv
+# ...but keep the small files predict.py needs or that show results
+!/output/station_ranking.csv
+!/output/step8_comparison.csv
+
+# prediction results (made by predict.py)
+/predictions/
+
+# ---------- Python ----------
+__pycache__/
+*.pyc
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# ---------- secrets (never commit these) ----------
+api_key.txt
+.env
+*.key

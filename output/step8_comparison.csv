@@ -1,0 +1,4 @@
+,score (avg precision),threshold,events caught,alarms right,unnecessary pump days/yr
+logistic regression (step 5),0.601,0.5,0.842,0.385,33.511
+neural network (PyTorch),0.594,0.5,0.842,0.368,35.383
+average of both,0.606,0.3,0.905,0.304,50.922
