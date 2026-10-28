@@ -1,0 +1,10 @@
+# For the web app (streamlit run app.py) and the step scripts.
+# scikit-learn is pinned: the saved models in output/ only load with the version that made them.
+streamlit==1.66.1
+scikit-learn==1.9.1
+shap==0.54.1
+pandas==3.1.0
+numpy==2.5.4
+altair==6.3.0
+joblib==1.6.0
+requests==2.34.2

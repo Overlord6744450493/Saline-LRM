@@ -12,6 +12,10 @@
 # ...but keep the small files predict.py needs or that show results
 !/output/station_ranking.csv
 !/output/step8_comparison.csv
+# ...and the small tables the web app reads
+!/output/daily_dataset.csv
+!/output/step10_canal_buffer.csv
+!/output/step10_feature_gain.csv
 
 # prediction results (made by predict.py)
 /predictions/

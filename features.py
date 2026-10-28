@@ -8,7 +8,8 @@ The chain:
     hourly weather (Open-Meteo)   --hourly_to_daily-->   one row per day
     10-minute sea level (RWS)     --daily_sea_level-->   one row per day
     + canal level                 --add_salt_level-->    salt_level, inflow
-    all daily columns together    --build_features-->    the 24 model inputs for day t
+    all daily columns together    --build_features-->    the model inputs for day t
+                                                         (24 for the 2-day model)
 """
 import numpy as np
 import pandas as pd
@@ -97,22 +98,59 @@ def add_salt_level(days):
 
 
 # ---------- the model inputs ----------
-def build_features(daily):
+def day_suffix(k):
+    """0 -> '_t', 2 -> '_t+2' (the names the 2-day model was trained with)."""
+    return "_t" if k == 0 else f"_t+{k}"
+
+
+SYNODIC_MONTH = 29.530588  # days from new moon to new moon
+NEW_MOON = pd.Timestamp("2000-01-06 18:14")  # a known new moon
+
+
+def context_features(daily, horizon):
+    """Extra inputs found in step 10 (seasonality and other effects), for day t -> t+horizon:
+    - season: time of year of the target day (inflow happens September to February)
+    - spring/neap tide: twice a month the tide range is small (neap) and low tide stays HIGH,
+      so inflow is ~2.5x as likely around half moon as around full/new moon
+    - surge today: how far the sea already is above the astronomical tide (a storm in progress)
+    - storm window: the worst wind and pressure over ALL days t..t+horizon, and 3 days of
+      north-west wind before the target day (the North Sea needs time to pile up)
+    - recent history: rain and inflow days in the last 7 days"""
+    X = pd.DataFrame(index=daily.index)
+    target = daily.index + pd.Timedelta(days=horizon)
+    year_angle = 2 * np.pi * target.day_of_year / 365.25
+    X["season_sin"], X["season_cos"] = np.sin(year_angle), np.cos(year_angle)
+    moon_angle = 2 * np.pi * ((target - NEW_MOON).total_seconds() / 86400 % SYNODIC_MONTH) / SYNODIC_MONTH
+    X["springneap_sin"], X["springneap_cos"] = np.sin(2 * moon_angle), np.cos(2 * moon_angle)  # 2 cycles/month
+    X[f"tide_range_t+{horizon}"] = (daily["tide_pred_high"] - daily["tide_pred_low"]).shift(-horizon)
+    X["surge_t"] = daily["sea_low"] - daily["tide_pred_low"]
+    days_ahead = range(horizon + 1)
+    X["nw_max_window"] = pd.concat([daily["wind_from_nw"].shift(-k) for k in days_ahead], axis=1).max(axis=1)
+    X["pressure_min_window"] = pd.concat([daily["pressure_min"].shift(-k) for k in days_ahead],
+                                         axis=1).min(axis=1)
+    X[f"nw_3day_t+{horizon}"] = sum(daily["wind_from_nw"].shift(-k) for k in [horizon - 2, horizon - 1, horizon]) / 3
+    X["rain_7d"] = daily["rain"].rolling(7).sum()
+    X["inflow_7d"] = daily["inflow"].rolling(7).sum()
+    return X
+
+
+def build_features(daily, horizon=2, context=False):
     """Daily table (date index; weather, tide_pred_low, salt_level, inflow, sea_mean,
-    storage_level columns) -> one row per day t with the model inputs.
+    storage_level columns) -> one row per day t with the model inputs to predict day t+horizon.
+    context=True adds the seasonality and other effects of context_features (step 9 models).
     Missing values stay NaN; the caller decides what to do with them."""
     daily = daily.asfreq("D")  # one row per calendar day, so shift(2) really means "2 days"
     X = pd.DataFrame(index=daily.index)
 
-    # Weather forecast for today (t), tomorrow (t+1) and the target day (t+2).
-    # shift(-2) = take the value from 2 days LATER and put it on today's row.
+    # Weather forecast for today (t), the day before the target day and the target day (t+horizon).
+    # For horizon 2 that is t, t+1, t+2. shift(-k) = take the value from k days LATER.
+    weather_days = sorted({0, horizon - 1, horizon})
     for col in WEATHER:
-        X[f"{col}_t"] = daily[col]
-        X[f"{col}_t+1"] = daily[col].shift(-1)
-        X[f"{col}_t+2"] = daily[col].shift(-2)
+        for k in weather_days:
+            X[f"{col}{day_suffix(k)}"] = daily[col].shift(-k)
 
     # Astronomical tide on the target day (always known in advance)
-    X["tide_pred_low_t+2"] = daily["tide_pred_low"].shift(-2)
+    X[f"tide_pred_low_t+{horizon}"] = daily["tide_pred_low"].shift(-horizon)
 
     # History: ONLY today and earlier. shift(1) = yesterday's value.
     X["salt_level_t"] = daily["salt_level"]
@@ -120,16 +158,19 @@ def build_features(daily):
     X["inflow_t"] = daily["inflow"]
     X["sea_mean_t"] = daily["sea_mean"]
     X["storage_level_t"] = daily["storage_level"]
+    if context:
+        X = X.join(context_features(daily, horizon))
     return X
 
 
-def build_target(daily):
-    """TARGET: inflow on day t+2 (on the row of day t)."""
-    return daily.asfreq("D")["inflow"].shift(-2)
+def build_target(daily, horizon=2):
+    """TARGET: inflow on day t+horizon (on the row of day t)."""
+    return daily.asfreq("D")["inflow"].shift(-horizon)
 
 
 # Inputs that need measured water levels (sea + canal). The weather-only model skips them.
-WATER_LEVEL_FEATURES = ["salt_level_t", "salt_level_t-1", "inflow_t", "sea_mean_t", "storage_level_t"]
+WATER_LEVEL_FEATURES = ["salt_level_t", "salt_level_t-1", "inflow_t", "sea_mean_t", "storage_level_t",
+                        "surge_t", "inflow_7d"]
 
 
 def weather_only(features):
